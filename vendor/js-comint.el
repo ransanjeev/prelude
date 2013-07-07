@@ -2,13 +2,13 @@
 
 ;;; Copyright (C) 2008 Paul Huff
 
+;;; Modified to use node by: Balaji S. Srinivasan <balajis@stanford.edu>
 ;;; Author: Paul Huff <paul.huff@gmail.com>
 ;;; Maintainer: Paul Huff <paul.huff@gmail.com>
 ;;; Created: 26 May 2008
 ;;; Version: 0.0.1
 ;;; Package-Requires: ()
 ;;; Keywords: javascript, inferior-mode, convenience
-
 
 ;; js-comint.el is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -30,7 +30,7 @@
 ;;   USA
 
 ;;; Commentary:
-;;; js-comint.el let's you run an inferior javascript process in emacs,
+;;; js-comint.el lets you run an inferior javascript process in emacs,
 ;;; and defines a few functions for sending javascript input to it quickly.
 
 ;;  Usage:
@@ -58,7 +58,7 @@
 ;;  Not sure if it'll work anywhere else, but it doesn't require anything apple-ish, just emacs-ish.
 
 ;; Additionally, I've only tested this with rhino.  I'm sure it'll probably work with spidermonkey,
-;; though if it barfs let me know, and I'll update it
+;; though if it barfs let me know, and I'll update it.
 
 ;; I'm a newbie elisper, so please let me know if I'm a. doing things the wrong way, b.
 ;; making things work they way they shouldn't in the elisp world.
@@ -72,7 +72,13 @@
 
 (provide 'js-comint)
 
-(defcustom inferior-js-program-command "/usr/bin/java org.mozilla.javascript.tools.shell.Main" "Path to the javascript interpreter")
+;; BSS: modified to use node rather than rhino
+;; http://js-comint-el.sourceforge.net
+(defun js-remove-last-char (foo)
+  (substring foo 0 (- (length foo) 1)))
+(setq js-prog "node")
+(setq js-shell-path (concat (file-name-directory load-file-name) "node_emacs"))
+(defcustom inferior-js-program-command js-shell-path "Path to the javascript interpreter")
 
 (defgroup inferior-js nil
   "Run a javascript process in a buffer."
@@ -96,6 +102,18 @@ is run).
   (interactive (list (if current-prefix-arg
 			 (read-string "Run js: " inferior-js-program-command)
 			 inferior-js-program-command)))
+
+  ;; BSS: node and node_emacs echo the command twice, rhino not at all.
+  ;; Thus we need different settings here for different modes.  Default is
+  ;; to have this variable NOT turned on.
+  (if (or (equal js-prog "node_emacs")
+	  (equal js-prog "node"))
+      (setq comint-process-echoes t)
+    )
+
+  ;; TODO: To allow node_emacs and another JS interpreter mongo to coexist,
+  ;; need to add feature to support multiple names simultaneously for
+  ;; inferior-js-buffer.
   (if (not (comint-check-proc "*js*"))
       (save-excursion (let ((cmdlist (split-string cmd)))
 	(set-buffer (apply 'make-comint "js" (car cmdlist)
@@ -106,21 +124,65 @@ is run).
   (if (not dont-switch-p)
       (pop-to-buffer "*js*")))
 
+
+(defun quote-js (mystr)
+  (replace-regexp-in-string "\\" "\\\\" mystr)
+  (replace-regexp-in-string "\"" "\\\"" )
+ )
+
+;;;###autoload
+(defun remove-newlines (mystr) (replace-regexp-in-string "\n" " " mystr))
+
+;;;###autoload
+(defun starts-with-js-comment (line) 
+  (equal 0 (string-match "^[[:space:]]*//" line)))
+
+;;;###autoload
+(defun remove-js-comments (mystr) 
+  "Remove lines starting with // and return as single line of JS code.
+   See: http://www.emacswiki.org/emacs/ElispCookbook
+  "
+  (mapconcat 'identity
+             (remove-if 'starts-with-js-comment 
+                        (split-string mystr "\n"))
+             " "
+             ))
+
 ;;;###autoload
 (defun js-send-region (start end)
   "Send the current region to the inferior Javascript process."
   (interactive "r")
+
+  ;; BSS: echo for node and node_emacs
+  (if (or (equal js-prog "node_emacs")
+	  (equal js-prog "node"))
+      (setq comint-process-echoes t)
+    )
   (run-js inferior-js-program-command t)
-  (comint-send-region inferior-js-buffer start end)
-  (comint-send-string inferior-js-buffer "\n"))
+
+  (setq curwindow (selected-window))
+  (save-excursion (let ((jscode (remove-js-comments (buffer-substring start end))))
+		    (set-buffer "*js*")
+		    (insert jscode)
+		    (comint-send-input)
+		    ))
+  (select-window curwindow)
+  )
+
+;;;###autoload
+(defun js-send-line ()
+  (interactive)
+  (save-excursion
+    (end-of-line)
+    (let ((end (point)))
+      (beginning-of-line)
+      (js-send-region (point) end))))
 
 ;;;###autoload
 (defun js-send-region-and-go (start end)
   "Send the current region to the inferior Javascript process."
   (interactive "r")
-  (run-js inferior-js-program-command t)
-  (comint-send-region inferior-js-buffer start end)
-  (comint-send-string inferior-js-buffer "\n")
+  (js-send-region start end)
   (switch-to-js inferior-js-buffer))
 
 ;;;###autoload
@@ -140,7 +202,6 @@ is run).
   "Send the buffer to the inferior Javascript process."
   (interactive)
   (js-send-region (point-min) (point-max)))
-
 
 ;;;###autoload
 (defun js-send-buffer-and-go ()
@@ -171,7 +232,7 @@ is run).
 With argument, position cursor at end of buffer."
   (interactive "P")
   (if (or (and inferior-js-buffer (get-buffer inferior-js-buffer))
-          (js-interactively-start-process))
+	  (js-interactively-start-process))
       (pop-to-buffer inferior-js-buffer)
     (error "No current process buffer.  See variable `inferior-js-buffer'"))
   (when eob-p
@@ -182,7 +243,7 @@ With argument, position cursor at end of buffer."
 
 (defvar inferior-js-mode-map
   (let ((m (make-sparse-keymap)))
-    (define-key m "\C-x\C-e" 'js-send-last-sexp)
+    ;;(define-key m "\C-x\C-e" 'js-send-last-sexp)
     (define-key m "\C-cl" 'js-load-file)
     m))
 
